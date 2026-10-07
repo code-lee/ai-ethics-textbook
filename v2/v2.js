@@ -43,7 +43,7 @@ function block(b, key, redraw) {
       const open = !!OPEN[key];
       const el = h('button', { class: 'b-cover' + (open ? ' open' : ''), 'data-key': key, onclick: () => {
           OPEN[key] = !OPEN[key]; if (OPEN[key]) SFX.reveal();
-          const nu = block(b, key, redraw); nu.className = el.className.replace(/\bopen\b/, '').trim() + (OPEN[key] ? ' open' : ''); el.replaceWith(nu);  // 그 자리에서만 바꾼다
+          const nu = tidyText(block(b, key, redraw)); nu.className = el.className.replace(/\bopen\b/, '').trim() + (OPEN[key] ? ' open' : ''); el.replaceWith(nu);  // 그 자리에서만 바꾼다
         } }, open ? h('span', { class: 'cv-text' }, b.text) : h('span', { class: 'cv-hint' }, b.hint || '눌러서 확인'));
       return el;
     }
@@ -121,14 +121,44 @@ function twoCol(el) {
 // 내용이 슬라이드보다 길면 zoom 으로 줄인다(위젯 글자가 rem 이라 font-size 로는 안 줄어서 zoom). 0.5 아래로는 안 줄이고 그땐 스크롤
 function fitSlide(stage, box) {
   box.style.zoom = 1;
-  const H = stage.clientHeight, W = stage.clientWidth;
+  const cs = getComputedStyle(stage);
+  const H = stage.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
+  const W = stage.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+  // 크기는 .sl-fit 의 레이아웃 값으로 잰다. stage.scroll* 로 재면 넘어올 때 미끄러지는 애니메이션(translateX)·도장 확대(scale 2.4)·제목 떠오르기가
+  // 넘침으로 잡혀, 넘치지 않는 장도 0.75배로 줄어든 채 남았다. 세로는 transform 이 안 섞이는 offsetHeight(.sl-fit 은 flex:1 이라 넘치면 같이 늘어난다),
+  // 가로는 표처럼 칸 밖으로 나가는 경우가 있어 scrollWidth — 애니메이션이 끝나면 render() 가 한 번 더 맞춘다. 둘 다 zoom 전 좌표라 z 를 곱한다
+  const size = z => ({ h: box.offsetHeight * z, w: box.scrollWidth * z });
+  // 글 칸은 한 줄 40자 안팎으로 묶어 두는데(v2.css '줄 길이'), 그 때문에 넘치면 글자를 줄이기 전에 먼저 폭 제한을 푼다 — 교실 TV 는 줄 길이보다 글자 크기가 먼저
+  box.classList.remove('wide');
+  if (size(1).h > H + 2) box.classList.add('wide');
   // 0.75배까지만 줄인다 — 그래도 넘치는 장은 split_dense.py 가 두 장으로 나눈다(PPT 는 줄여 넣는 게 아니라 장을 나눈다)
   const MIN = 0.75;
-  for (let z = 1, k = 0; (stage.scrollHeight > H + 2 || stage.scrollWidth > W + 2) && z > MIN && k < 16; k++) {
-    z = Math.max(MIN, z * Math.min(0.96, (H / stage.scrollHeight) + 0.03)); box.style.zoom = z;
+  for (let z = 1, k = 0, s = size(1); (s.h > H + 2 || s.w > W + 2) && z > MIN && k < 16; k++, s = size(z)) {
+    z = Math.max(MIN, z * Math.min(0.96, (H / s.h) + 0.03, (W / s.w) + 0.03)); box.style.zoom = z;
   }
 }
 addEventListener('resize', () => { const st = $('.slide'), bx = $('.sl-fit'); if (st && bx) fitSlide(st, bx); });
+
+// 화면 글 다듬기 — 데이터(원문 글자)는 그대로 두고 그릴 때만 손본다
+// 1) 줄은 띄어쓰기에서만 바꾼다: 괄호·가운뎃점·빗금·따옴표 앞뒤에서도 줄이 바뀌어 '사람|(당사자)', '교사·|부모', '음성/|음악',
+//    '‘내일 날씨’|라고', '_____|라고'처럼 낱말이 갈라졌다 → 그 자리에 낱말 잇기(U+2060, 보이지 않음).
+//    단 9자 넘는 묶음('개발자·기업·운용자')은 잇지 않는다 — 좁은 칸에서 통째로 안 들어가 오히려 낱말 한가운데서 끊겼다
+const JOIN_BEFORE = '(\\[{「『‘“〈《·•・/~–—…-', JOIN_AFTER = '·•・/~–—…%#)\\]}」』’”〉》-';
+const NOBR = new RegExp(`(?<=[^\\s\\u2060])(?=[${JOIN_BEFORE}])|(?<=[${JOIN_AFTER}])(?=[^\\s\\u2060])|(?<=[^\\s\\u2060_])(?=_)|(?<=_)(?=[^\\s\\u2060_])`, 'gu');
+//    긴 묶음도 줄 첫머리 금칙은 지킨다 — 가운뎃점·빗금·줄임표·닫는 괄호는 앞 글자에, 닫는 괄호 뒤 토씨는 괄호에 붙인다('작성자|·기관', '-Check)|이')
+const LEAD = /(?<=[^\s\u2060])(?=[·•・/…%)\]}」』’”〉》])|(?<=[)\]}」』’”〉》])(?=[가-힣])/gu;
+const joinWord = w => w.replace(w.replace(/_+/g, '_').length <= 9 ? NOBR : LEAD, '\u2060');  // 빈칸 밑줄 묶음은 한 글자로 센다
+// 2) 좁은 칸(카드·캡션·보기·표)에 긴 영어 낱말이 있으면 칸보다 길어 ')'·'&'만 다음 줄로 떨어졌다 → 그 칸만 글자를 조금 줄인다(.lw)
+const NARROW = '.fl-front, .fl-back, figcaption, .vo-t';  // 표 칸은 뺀다 — 한 칸만 작아지면 표가 들쭉날쭉했다
+// 3) 긴 발문은 크고 굵은 글씨 그대로면 여섯 줄 넘게 빽빽했다 → 한 단계 작고 줄간격 넓게(.lq)
+function tidyText(root) {
+  const tw = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  // 띄어 쓴 줄표(' — ')는 앞말에 붙여 줄 끝에 남긴다(다음 줄 첫머리에 '—'가 왔다)
+  for (let n; (n = tw.nextNode());) { const t = n.data.replace(/ ([—–]) /g, '\u00a0$1 ').replace(/\S+/g, joinWord); if (t !== n.data) n.data = t; }
+  root.querySelectorAll(NARROW).forEach(el => el.classList.toggle('lw', /[A-Za-z]{11,}/.test(el.textContent)));
+  root.querySelectorAll('.vq-q, .b-text.big').forEach(el => el.classList.toggle('lq', el.textContent.replace(/\u2060/g, '').length > 70));
+  return root;
+}
 
 // 활동 → 선택형 질문 목록 [{q, options}] — 원래 객관식·분류·척도는 그대로, 서술형은 to_vote.py 가 원문 보기로 만든 act.vote
 function voteQs(a) {
@@ -259,6 +289,7 @@ async function classMain() {
         h('button', { class: 'go', disabled: !all, onclick: () => { REV[act.id] = !REV[act.id]; if (REV[act.id]) SFX.sparkle(); render(); } }, rev ? '강조 끄기' : '결과 정리'),
         h('button', { class: 'ghost', disabled: !all, onclick: () => { if (confirm('센 인원을 지울까요?')) { VOTES[act.id] = {}; jset(KEY + '_votes', VOTES); render(); } } }, '비우기'));
     }
+    tidyText(stage);
     const noteBox = null;  // 발문 노트는 뺐다(대표님 2026-10-06)
     const bar = h('footer', { class: 'cl-bar' },
       h('a', { class: 'ghost', href: `/ai-ethics-textbook/${KLV[L.level]}/${L.no}`, title: '차시 화면으로' }, '← 차시'),
@@ -296,6 +327,9 @@ async function classMain() {
     root.replaceChildren(top, h('div', { class: 'cl-body' + (noteBox ? ' with-side' : '') }, ...[stage, noteBox].filter(Boolean)), bar);
     const fit = () => fitSlide(stage, fitBox);
     fit(); fitBox.querySelectorAll('img, video').forEach(m => m.addEventListener(m.tagName === 'IMG' ? 'load' : 'loadedmetadata', fit, { once: true }));
+    // 등장 애니메이션(미끄러져 들어오기·도장·떠오르기)이 끝나면 한 번 더 맞춘다 — 가로는 transform 이 섞이는 scrollWidth 로 재기 때문
+    requestAnimationFrame(() => Promise.all(stage.getAnimations({ subtree: true })
+      .filter(a => a.effect?.getComputedTiming().iterations !== Infinity).map(a => a.finished)).then(fit, () => {}));
     // 가림막·카드를 열면 내용이 길어진다 — 크기가 바뀔 때마다 다시 맞춘다(열고 나서 아래가 잘렸다)
     new ResizeObserver(() => fit()).observe(fitBox.querySelector('.sl-main, .vote, .sl-title') || fitBox);
   }
